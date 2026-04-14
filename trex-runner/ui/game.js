@@ -1,18 +1,51 @@
-const c=document.getElementById('game');
-const ctx=c.getContext('2d');
-const highScoreEl=document.getElementById('highscore');
-const statusEl=document.getElementById('status');
-const startBtn=document.getElementById('startBtn');
+const c = document.getElementById('game');
+const ctx = c.getContext('2d');
+const W = 800, H = 250;  // logical canvas size
+c.width = W; c.height = H;
 
-// Game state: 'idle' | 'running' | 'over'
-let state='idle';
-let y=150,vy=0,g=1,score=0;
-let obs=800;
-let rafId=null;
+const highScoreEl = document.getElementById('highscore');
+const statusEl    = document.getElementById('status');
+const startBtn    = document.getElementById('startBtn');
 
-// Dino SVG asset (pixel-art T-Rex style)
-const dinoImg=new Image();
-dinoImg.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
+// ── Game state ──────────────────────────────────────────────
+// 'idle' | 'running' | 'over'
+let state = 'idle';
+
+// Dino physics
+const GROUND = 185;   // dino feet y when standing
+let dinoY = GROUND, dinoVY = 0;
+const GRAVITY = 1.2, JUMP_V = -16;
+
+// Cactus
+let obsX = W;
+let score = 0;
+let rafId = null;
+
+window.gameScore = 0;
+
+// ── Clouds ──────────────────────────────────────────────────
+const clouds = [
+  {x:120, y:35, w:90, speed:0.6},
+  {x:340, y:55, w:70, speed:0.4},
+  {x:580, y:28, w:110,speed:0.7},
+  {x:720, y:50, w:80, speed:0.5},
+];
+
+// ── Birds ───────────────────────────────────────────────────
+const birds = [
+  {x:900, y:55,  speed:2.2, wing:0, flapT:0},
+  {x:1100,y:38,  speed:1.8, wing:0, flapT:10},
+  {x:1350,y:70,  speed:2.5, wing:0, flapT:5},
+];
+
+// ── Road stripes ────────────────────────────────────────────
+const stripes = [];
+for(let i=0;i<10;i++) stripes.push({x: i*110, y:204, w:60, h:5});
+let stripeOffset = 0;
+
+// ── SVG Images ──────────────────────────────────────────────
+const dinoImg = new Image();
+dinoImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
   <rect x="0" y="24" width="6" height="4" fill="#535353"/>
   <rect x="4" y="20" width="6" height="8" fill="#535353"/>
@@ -31,9 +64,8 @@ dinoImg.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
   <rect x="8" y="40" width="11" height="4" fill="#535353"/>
 </svg>`);
 
-// Cactus SVG asset
-const cactusImg=new Image();
-cactusImg.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
+const cactusImg = new Image();
+cactusImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 55">
   <rect x="11" y="0" width="8" height="55" fill="#2f9e44"/>
   <rect x="2" y="14" width="11" height="7" fill="#2f9e44"/>
@@ -46,88 +78,206 @@ cactusImg.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(
   <rect x="26" y="17" width="4" height="2" fill="#40c057"/>
 </svg>`);
 
-// Fetch high score from API on load
+// ── API ─────────────────────────────────────────────────────
 fetch('http://localhost:3000/score')
   .then(r=>r.json())
-  .then(data=>{ if(highScoreEl) highScoreEl.textContent='High Score: '+data.highScore; })
+  .then(d=>{ if(highScoreEl) highScoreEl.textContent='High Score: '+d.highScore; })
   .catch(()=>{});
 
-// Jump on Space / any key — only while game is running
-document.addEventListener('keydown',e=>{
-  if(state==='running' && y>=150) vy=-15;
+// ── Input ───────────────────────────────────────────────────
+document.addEventListener('keydown', ()=>{
+  if(state==='running' && dinoY>=GROUND) dinoVY=JUMP_V;
 });
-
-// Start / Restart button
-startBtn.addEventListener('click',()=>{
+startBtn.addEventListener('click', ()=>{
   if(state==='idle'||state==='over') startGame();
 });
 
-function setStatus(msg){
-  if(statusEl) statusEl.textContent=msg;
+// ── Helpers ─────────────────────────────────────────────────
+function setStatus(msg){ if(statusEl) statusEl.textContent=msg; }
+
+// ── Draw sky gradient ────────────────────────────────────────
+function drawSky(){
+  const grad = ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'#5ba3d9');
+  grad.addColorStop(0.55,'#acd8f0');
+  grad.addColorStop(1,'#d4ecfb');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,H);
 }
 
+// ── Draw ground / road ───────────────────────────────────────
+function drawGround(moving){
+  // Soil strip
+  ctx.fillStyle='#c8a96e';
+  ctx.fillRect(0,198,W,H-198);
+  // Road surface
+  ctx.fillStyle='#7a7a7a';
+  ctx.fillRect(0,196,W,20);
+  // Road edge lines
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(0,196,W,2);
+  ctx.fillRect(0,214,W,2);
+  // Dashed centre stripes
+  ctx.fillStyle='#ffff99';
+  const offset = moving ? stripeOffset : 0;
+  for(let i=0;i<12;i++){
+    const sx = ((i*110 - offset) % (W+110) + W+110) % (W+110) - 50;
+    ctx.fillRect(sx,204,60,4);
+  }
+}
+
+// ── Draw clouds ──────────────────────────────────────────────
+function drawClouds(){
+  clouds.forEach(cl=>{
+    ctx.fillStyle='rgba(255,255,255,0.92)';
+    // Main puff
+    ctx.beginPath();
+    ctx.ellipse(cl.x, cl.y, cl.w*0.5, 14, 0, 0, Math.PI*2);
+    ctx.fill();
+    // Left bump
+    ctx.beginPath();
+    ctx.ellipse(cl.x-cl.w*0.22, cl.y+3, cl.w*0.28, 11, 0, 0, Math.PI*2);
+    ctx.fill();
+    // Right bump
+    ctx.beginPath();
+    ctx.ellipse(cl.x+cl.w*0.22, cl.y+4, cl.w*0.22, 9, 0, 0, Math.PI*2);
+    ctx.fill();
+  });
+}
+
+// ── Draw birds ───────────────────────────────────────────────
+function drawBirds(tick){
+  birds.forEach(b=>{
+    const flap = Math.sin(tick*0.18 + b.flapT) > 0;
+    ctx.strokeStyle='#2c3e50';
+    ctx.lineWidth=2;
+    ctx.lineCap='round';
+    // Simple M-shape bird
+    ctx.beginPath();
+    if(flap){
+      ctx.moveTo(b.x-7, b.y);  ctx.quadraticCurveTo(b.x-3, b.y-5, b.x, b.y);
+      ctx.quadraticCurveTo(b.x+3, b.y-5, b.x+7, b.y);
+    } else {
+      ctx.moveTo(b.x-7, b.y);  ctx.quadraticCurveTo(b.x-3, b.y+4, b.x, b.y);
+      ctx.quadraticCurveTo(b.x+3, b.y+4, b.x+7, b.y);
+    }
+    ctx.stroke();
+  });
+}
+
+// ── Full scene draw (static snapshot for idle/over) ──────────
+function drawScene(tick, moving){
+  drawSky();
+  drawClouds();
+  drawBirds(tick);
+  drawGround(moving);
+  // Cactus (only draw if not off screen in idle)
+  if(obsX < W+10){
+    ctx.drawImage(cactusImg, obsX, GROUND-50, 30, 55);
+  }
+  // Dino
+  ctx.drawImage(dinoImg, 40, dinoY-32, 44, 44);
+  // Score
+  ctx.fillStyle='#1a4a6b';
+  ctx.font='bold 15px Segoe UI,sans-serif';
+  ctx.fillText('Score: '+score, 12, 22);
+}
+
+// ── Idle frame ───────────────────────────────────────────────
+let idleTick = 0;
 function drawIdle(){
-  ctx.clearRect(0,0,800,200);
-  ctx.fillStyle='#bbb';
-  ctx.fillRect(0,193,800,3);
-  ctx.drawImage(dinoImg,40,150-18,44,44);
-  ctx.fillStyle='#aaa';
-  ctx.font='14px sans-serif';
-  ctx.fillText('Score: 0',10,18);
+  if(state!=='idle') return;
+  idleTick++;
+  // Clouds drift slowly left even in idle
+  clouds.forEach(cl=>{
+    cl.x -= cl.speed * 0.3;
+    if(cl.x + 70 < 0) cl.x = W + 60;
+  });
+  // Birds drift slowly
+  birds.forEach(b=>{
+    b.x -= b.speed * 0.3;
+    if(b.x < -20) b.x = W + Math.random()*200 + 50;
+  });
+  drawScene(idleTick, false);
+  rafId = requestAnimationFrame(drawIdle);
 }
 
+// ── Start game ───────────────────────────────────────────────
 function startGame(){
-  // Reset state
-  y=150; vy=0; score=0; obs=800;
+  if(rafId) cancelAnimationFrame(rafId);
+  // Reset positions
+  dinoY=GROUND; dinoVY=0; score=0; obsX=W;
+  stripeOffset=0;
+  // Scatter clouds to spread
+  clouds[0].x=120; clouds[1].x=340; clouds[2].x=580; clouds[3].x=720;
+  // Scatter birds off-screen so they fly in naturally
+  birds[0].x=W+100; birds[1].x=W+280; birds[2].x=W+520;
   state='running';
   window.gameScore=0;
   startBtn.textContent='Restart';
   setStatus('Running — press Space to jump!');
-  if(rafId) cancelAnimationFrame(rafId);
-  loop();
+  loop(0);
 }
 
+// ── Game over ────────────────────────────────────────────────
 function gameOver(){
   state='over';
   startBtn.textContent='Restart';
   setStatus('Game Over! Score: '+score+' — click Restart to play again');
+  // Draw frozen scene
+  drawScene(0, false);
   fetch('http://localhost:3000/score/'+score,{method:'POST'})
     .then(r=>r.json())
-    .then(data=>{
-      if(highScoreEl) highScoreEl.textContent='High Score: '+data.highScore;
-    })
+    .then(d=>{ if(highScoreEl) highScoreEl.textContent='High Score: '+d.highScore; })
     .catch(()=>{});
 }
 
+// ── Main game loop ───────────────────────────────────────────
+let tick = 0;
 function loop(){
-  // Safety guard — never run unless game is actively started
   if(state!=='running') return;
+  tick++;
 
-  ctx.clearRect(0,0,800,200);
-  vy+=g; y+=vy; if(y>150){y=150;vy=0}
-  obs-=6; if(obs<0){obs=800;score++}
-  window.gameScore=score;
+  // Physics
+  dinoVY += GRAVITY;
+  dinoY  += dinoVY;
+  if(dinoY >= GROUND){ dinoY=GROUND; dinoVY=0; }
 
-  // Ground line
-  ctx.fillStyle='#bbb';
-  ctx.fillRect(0,193,800,3);
-  // Dino
-  ctx.drawImage(dinoImg,40,y-18,44,44);
   // Cactus
-  ctx.drawImage(cactusImg,obs,138,30,55);
-  // Score
-  ctx.fillStyle='#555';
-  ctx.font='14px sans-serif';
-  ctx.fillText('Score: '+score,10,18);
+  obsX -= 6;
+  if(obsX < -40){ obsX=W + Math.floor(Math.random()*200); score++; }
+  window.gameScore = score;
 
-  if(obs<70&&obs>50&&y>140){
+  // Road stripes scroll
+  stripeOffset = (stripeOffset + 6) % 110;
+
+  // Clouds
+  clouds.forEach(cl=>{
+    cl.x -= cl.speed;
+    if(cl.x + 70 < 0) cl.x = W + 60;
+  });
+
+  // Birds
+  birds.forEach(b=>{
+    b.x -= b.speed;
+    if(b.x < -20) b.x = W + Math.random()*300 + 100;
+    // Gentle up/down drift
+    b.y += Math.sin(tick*0.04 + b.flapT)*0.3;
+    b.y = Math.max(20, Math.min(85, b.y));
+  });
+
+  // Draw everything
+  drawScene(tick, true);
+
+  // Collision check (AABB dino vs cactus)
+  if(obsX < 84 && obsX > 46 && dinoY > GROUND-28){
     gameOver();
   } else {
-    rafId=requestAnimationFrame(loop);
+    rafId = requestAnimationFrame(loop);
   }
 }
 
-// Draw idle frame once dino image is loaded
-dinoImg.onload=function(){
-  if(state==='idle') drawIdle();
+// ── Boot ─────────────────────────────────────────────────────
+dinoImg.onload = ()=>{
+  if(state==='idle') rafId = requestAnimationFrame(drawIdle);
 };
