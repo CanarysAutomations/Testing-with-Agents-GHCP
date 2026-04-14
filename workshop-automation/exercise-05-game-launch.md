@@ -13,7 +13,7 @@
 |---|---|
 | Page loads without JS errors | No errors in console |
 | Canvas is visible | `getByLabel('game-canvas')` is visible |
-| Canvas dimensions | 800 × 200 pixels |
+| Canvas dimensions | 800 × 250 pixels |
 | High score display | `getByLabel('high-score')` shows "High Score: 0" |
 
 ---
@@ -57,7 +57,7 @@ Using the Playwright MCP tool:
 1. Navigate to http://127.0.0.1:8080
 2. Confirm the page loaded without JavaScript errors
 3. Confirm the canvas element with aria-label="game-canvas" is visible
-4. Read the canvas bounding box and confirm it is 800×200 pixels
+4. Read the canvas bounding box and confirm it is 800×250 pixels
 5. Confirm the high score element with aria-label="high-score" shows "High Score: 0"
 
 Then generate a Playwright TypeScript test file covering all 4 checks.
@@ -79,7 +79,7 @@ npx playwright test tests/trex-visual.spec.ts --reporter=list
 Expected output:
 ```
 ✓  canvas is visible on load
-✓  canvas dimensions are 800×200
+✓  canvas dimensions are 800×250
 ✓  high score shows 0 on first load
 ✓  no JavaScript errors on load
 ```
